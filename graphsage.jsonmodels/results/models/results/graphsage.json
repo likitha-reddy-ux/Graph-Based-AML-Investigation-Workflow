@@ -1,9 +1,0 @@
-{
-  "precision": 0.5874,
-  "recall": 0.5863,
-  "f1": 0.5869,
-  "pr_auc": 0.5604,
-  "threshold": 0.84,
-  "n_test": 16670,
-  "n_illicit": 1083
-}
