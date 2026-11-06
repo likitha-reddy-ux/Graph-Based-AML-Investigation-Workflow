@@ -14,11 +14,13 @@ An end-to-end **anti-money laundering (AML)** system that turns raw Bitcoin tran
 
 ## Table of Contents
 - [Overview](#overview)
+- [Project Status](#project-status)
 - [Architecture](#architecture)
 - [Dataset](#dataset)
 - [Features](#features)
 - [Tech Stack](#tech-stack)
 - [Project Structure](#project-structure)
+- [Quick Start (Google Colab)](#quick-start-google-colab)
 - [Getting Started](#getting-started)
 - [Usage](#usage)
 - [Model Results](#model-results)
@@ -39,6 +41,19 @@ Traditional rule-based AML systems look at transactions one at a time and miss p
 3. **Investigation workflow** – A LangGraph agent pulls the suspicious subgraph, scores risk, and drafts a SAR-style narrative. An analyst reviews it in a React dashboard and approves or rejects the case.
 
 > ⚠️ This is a research / portfolio project built on a public dataset. It is not a production compliance system and its outputs are not legal or regulatory findings.
+
+---
+
+## Project Status
+
+| Component | Status |
+|-----------|--------|
+| PySpark graph pipeline (`pipeline/`) | ✅ Done |
+| XGBoost baseline + GraphSAGE model (`models/`) | ✅ Done |
+| Neo4j graph loader (`graph_db/`) | 🚧 In progress |
+| LangGraph investigation workflow (`agent/`) | 🚧 In progress |
+| FastAPI backend (`api/`) | 🚧 In progress |
+| React + Cytoscape.js dashboard (`frontend/`) | 🚧 In progress |
 
 ---
 
@@ -82,7 +97,7 @@ Traditional rule-based AML systems look at transactions one at a time and miss p
 
 ## Dataset
 
-**Elliptic Bitcoin Dataset** (public, Kaggle)
+**Elliptic Bitcoin Dataset** (public)
 
 | Item | Details |
 |------|---------|
@@ -92,7 +107,21 @@ Traditional rule-based AML systems look at transactions one at a time and miss p
 | Time steps | 49 |
 | Labels | Illicit, Licit, Unknown (most nodes are unlabeled) |
 
-Download it from Kaggle and place the CSV files in `data/raw/`:
+The easiest way to get it is through PyTorch Geometric, which downloads the original CSV files:
+
+```python
+from torch_geometric.datasets import EllipticBitcoinDataset
+EllipticBitcoinDataset(root="data/elliptic")
+```
+
+Then copy the CSVs to `data/raw/`:
+
+```bash
+mkdir -p data/raw
+cp data/elliptic/raw/*.csv data/raw/
+```
+
+You can also download it from [Kaggle](https://www.kaggle.com/datasets/ellipticco/elliptic-data-set). Either way, `data/raw/` should contain:
 
 ```
 data/raw/elliptic_txs_features.csv
@@ -109,7 +138,9 @@ data/raw/elliptic_txs_classes.csv
 - **Scalable data processing** with PySpark – cleaning, label mapping, and graph construction.
 - **Graph Neural Network** (GraphSAGE) that uses neighbourhood patterns, not just single-transaction features.
 - **Baseline comparison** against XGBoost using precision, recall, and F1 on the illicit class.
-- **Temporal train/test split** by time step to avoid data leakage.
+- **Temporal train/validation/test split** by time step to avoid data leakage.
+- **Class imbalance handling** with class weights, and a decision threshold tuned on validation data.
+- **Early stopping** on validation PR-AUC for both models.
 - **Neo4j graph store** for fast multi-hop transaction tracing.
 - **LangGraph investigation agent**: graph retrieval → risk scoring → LLM summary → SAR-style narrative draft.
 - **Human-in-the-loop**: no case is closed without analyst approval or rejection.
@@ -134,16 +165,18 @@ data/raw/elliptic_txs_classes.csv
 ## Project Structure
 
 ```
-graph-aml-investigation/
+Graph-Based-AML-Investigation-Workflow/
 ├── data/
 │   ├── raw/                  # Elliptic CSVs (not committed)
-│   └── processed/            # Cleaned graph data
+│   └── processed/            # nodes, edges, risk scores (Parquet, not committed)
 ├── pipeline/
 │   └── build_graph.py        # PySpark: clean data, build edges/nodes
 ├── models/
+│   ├── data.py               # Shared loading, temporal split, metrics
 │   ├── graphsage.py          # GraphSAGE model definition
-│   ├── train_gnn.py          # GNN training + evaluation
-│   └── train_xgboost.py      # XGBoost baseline
+│   ├── train_gnn.py          # GNN training, evaluation, risk scores
+│   ├── train_xgboost.py      # XGBoost baseline
+│   └── results/              # Test metrics as JSON
 ├── graph_db/
 │   └── load_neo4j.py         # Load nodes, edges, risk scores into Neo4j
 ├── agent/
@@ -161,19 +194,45 @@ graph-aml-investigation/
 
 ---
 
+## Quick Start (Google Colab)
+
+The pipeline and models run in a free [Google Colab](https://colab.research.google.com) notebook with no local setup. Run each block as its own cell:
+
+```python
+!git clone https://github.com/likitha-reddy-ux/Graph-Based-AML-Investigation-Workflow.git
+%cd Graph-Based-AML-Investigation-Workflow
+!pip install -q pyspark xgboost torch_geometric
+```
+
+```python
+from torch_geometric.datasets import EllipticBitcoinDataset
+EllipticBitcoinDataset(root="data/elliptic")
+```
+
+```python
+!mkdir -p data/raw && cp data/elliptic/raw/*.csv data/raw/
+!python pipeline/build_graph.py
+!python models/train_xgboost.py
+!python models/train_gnn.py
+```
+
+For faster GraphSAGE training, switch to a GPU first: **Runtime → Change runtime type → T4 GPU**.
+
+---
+
 ## Getting Started
 
 ### Prerequisites
 - Python 3.10+
-- Java 8/11 (for PySpark)
+- Java 11 or 17 (for PySpark)
 - Node.js 18+
 - Neo4j (Desktop or Docker)
 - An LLM API key
 
 ### 1. Clone the repo
 ```bash
-git clone https://github.com/<your-username>/graph-aml-investigation.git
-cd graph-aml-investigation
+git clone https://github.com/likitha-reddy-ux/Graph-Based-AML-Investigation-Workflow.git
+cd Graph-Based-AML-Investigation-Workflow
 ```
 
 ### 2. Set up Python environment
@@ -235,16 +294,31 @@ Open the dashboard at `http://localhost:5173` (or the port shown in your termina
 
 ## Model Results
 
-Evaluated on the **illicit class** using a temporal split (train on earlier time steps, test on later ones).
+Both models use the same **temporal split**, so they are tested on transactions from later time periods than they were trained on:
 
-| Model | Precision | Recall | F1 |
-|-------|-----------|--------|----|
-| XGBoost (baseline) | _add_ | _add_ | _add_ |
-| GraphSAGE | _add_ | _add_ | _add_ |
+| Split | Time steps | Used for |
+|-------|-----------|----------|
+| Train | 1–29 | Learning model weights |
+| Validation | 30–34 | Early stopping and choosing the decision threshold |
+| Test | 35–49 | Final reported results |
 
-> Replace the placeholders with the numbers from your own runs.
+Scores are for the **illicit class** on the test set. Only labeled transactions are scored; unlabeled ones still act as neighbours in the graph.
 
-**Note:** The Elliptic dataset is highly imbalanced, and model performance is known to drop after a dark-market shutdown event in later time steps. Results should be read with that in mind.
+| Model | Precision | Recall | F1 | PR-AUC |
+|-------|-----------|--------|----|--------|
+| XGBoost (baseline) | 0.568 | **0.741** | **0.643** | **0.771** |
+| GraphSAGE | **0.587** | 0.586 | 0.587 | 0.560 |
+
+Test set: 16,670 labeled transactions, of which 1,083 are illicit. Full results, including the chosen thresholds, are in [`models/results/`](models/results/).
+
+**Key findings**
+
+- **XGBoost outperformed GraphSAGE** on F1 (0.643 vs. 0.587) and especially on PR-AUC (0.771 vs. 0.560), catching about 74% of illicit transactions compared with about 59%.
+- **GraphSAGE was slightly more precise** (0.587 vs. 0.568), meaning a little fewer false alarms among the transactions it flagged.
+- A likely reason for the gap: 72 of the 165 Elliptic features are already **aggregated from each transaction's neighbours**, so a strong tree model gets much of the graph signal without message passing. This matches results reported in the original Elliptic paper (Weber et al., 2019), where tree ensembles beat GCNs on node features.
+- Both models face the **dark-market shutdown** around time step 43, after which illicit patterns change and every model trained on earlier data struggles.
+
+**Note:** The Elliptic dataset is highly imbalanced (about 6.5% of the labeled test transactions are illicit), so PR-AUC and illicit-class F1 are more meaningful here than accuracy.
 
 ---
 
@@ -271,6 +345,7 @@ The LangGraph agent runs these steps for each flagged transaction:
 
 ## Future Work
 
+- Feed GraphSAGE embeddings into XGBoost as extra features, combining both models' strengths.
 - Try GAT / temporal GNNs (e.g., EvolveGCN).
 - Add explainability (GNNExplainer) to highlight the most influential neighbours.
 - Add evaluation for narrative quality (faithfulness to retrieved evidence).
