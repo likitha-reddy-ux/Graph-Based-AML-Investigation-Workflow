@@ -1,0 +1,29 @@
+# Secrets
+.env
+
+# Data (too large to commit)
+data/raw/
+data/processed/
+
+# Python
+__pycache__/
+*.pyc
+venv/
+.venv/
+*.egg-info/
+.ipynb_checkpoints/
+
+# Models and outputs
+*.pt
+*.pkl
+mlruns/
+spark-warehouse/
+
+# Frontend
+node_modules/
+dist/
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
