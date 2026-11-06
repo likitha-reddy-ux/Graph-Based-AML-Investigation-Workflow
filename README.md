@@ -50,10 +50,10 @@ Traditional rule-based AML systems look at transactions one at a time and miss p
 |-----------|--------|
 | PySpark graph pipeline (`pipeline/`) | ✅ Done |
 | XGBoost baseline + GraphSAGE model (`models/`) | ✅ Done |
-| Neo4j graph loader (`graph_db/`) | 🚧 In progress |
-| LangGraph investigation workflow (`agent/`) | 🚧 In progress |
-| FastAPI backend (`api/`) | 🚧 In progress |
-| React + Cytoscape.js dashboard (`frontend/`) | 🚧 In progress |
+| Neo4j graph loader (`graph_db/`) | ✅ Done |
+| LangGraph investigation workflow (`agent/`) | ✅ Done |
+| FastAPI backend + tests (`api/`, `tests/`) | ✅ Done |
+| React + Cytoscape.js dashboard (`frontend/`) | ✅ Done |
 
 ---
 
@@ -180,13 +180,19 @@ Graph-Based-AML-Investigation-Workflow/
 ├── graph_db/
 │   └── load_neo4j.py         # Load nodes, edges, risk scores into Neo4j
 ├── agent/
-│   ├── workflow.py           # LangGraph investigation graph
-│   ├── tools.py              # Graph retrieval & risk scoring tools
-│   └── prompts.py            # SAR narrative prompts
+│   ├── workflow.py           # LangGraph: retrieve → score → draft → validate → save
+│   ├── tools.py              # Neo4j queries (neighbourhood, cases, decisions)
+│   ├── llm.py                # Narrative drafting: template, Claude, or Gemini
+│   └── prompts.py            # SAR narrative prompt
 ├── api/
 │   └── main.py               # FastAPI endpoints
+├── tests/
+│   └── test_api.py           # pytest API tests (no database needed)
 ├── frontend/                 # React + TypeScript + Cytoscape.js dashboard
-├── notebooks/                # EDA and experiments
+│   └── src/
+│       ├── App.tsx
+│       ├── api.ts
+│       └── components/       # CaseList, CaseDetailView, GraphView, DecisionPanel
 ├── requirements.txt
 ├── .env.example
 └── README.md
@@ -226,8 +232,8 @@ For faster GraphSAGE training, switch to a GPU first: **Runtime → Change runti
 - Python 3.10+
 - Java 11 or 17 (for PySpark)
 - Node.js 18+
-- Neo4j (Desktop or Docker)
-- An LLM API key
+- A Neo4j database (free [Neo4j Aura](https://console.neo4j.io) instance or local Docker)
+- Optional: an Anthropic or Gemini API key (narratives use a free rule-based template by default)
 
 ### 1. Clone the repo
 ```bash
@@ -278,17 +284,35 @@ python pipeline/build_graph.py
 python models/train_xgboost.py
 python models/train_gnn.py
 
-# 3. Load graph + risk scores into Neo4j
+# 3. Load graph + risk scores into Neo4j (test period by default)
 python graph_db/load_neo4j.py
 
-# 4. Start the API
+# 4. Investigate the riskiest flagged transactions (creates pending-review cases)
+python agent/workflow.py --top 3
+
+# 5. Run the API tests
+pytest tests/ -v
+
+# 6. Start the API (docs at http://localhost:8000/docs)
 uvicorn api.main:app --reload
 
-# 5. Start the dashboard (new terminal)
-cd frontend && npm run dev
+# 7. Start the dashboard (new terminal)
+cd frontend && npm install && npm run dev
 ```
 
-Open the dashboard at `http://localhost:5173` (or the port shown in your terminal).
+Open the dashboard at `http://localhost:5173`. The dashboard forwards `/api` requests to the FastAPI server on port 8000.
+
+### API endpoints
+
+| Method | Endpoint | Purpose |
+|--------|----------|---------|
+| GET | `/health` | API and Neo4j status |
+| GET | `/transactions/flagged` | Highest-risk flagged transactions |
+| POST | `/investigate` | Run the LangGraph workflow and create cases |
+| GET | `/cases` | List cases, filter by `status` |
+| GET | `/cases/{case_id}` | Case details and draft narrative |
+| GET | `/cases/{case_id}/graph` | 2-hop transaction graph in Cytoscape.js format |
+| POST | `/cases/{case_id}/decision` | Analyst approves or rejects (only once per case) |
 
 ---
 
@@ -326,11 +350,11 @@ Test set: 16,670 labeled transactions, of which 1,083 are illicit. Full results,
 
 The LangGraph agent runs these steps for each flagged transaction:
 
-1. **Retrieve** – Query Neo4j for the transaction's multi-hop neighbourhood.
-2. **Score** – Attach GNN risk scores and simple pattern signals (fan-in, fan-out, chain length).
-3. **Summarize** – The LLM explains why the cluster looks suspicious, using only retrieved evidence.
-4. **Draft** – Generate a SAR-style narrative for the analyst.
-5. **Human Review** – The analyst approves or rejects the case in the dashboard. Nothing is closed automatically.
+1. **Retrieve** – Query Neo4j for the transaction, its senders and receivers, and transactions two hops away.
+2. **Score** – Compute explainable signals (fan-in, fan-out, links to known illicit or flagged transactions) and a case priority.
+3. **Draft** – Write a SAR-style summary, indicators, recommended action, and narrative. Uses a rule-based template by default, or Claude / Gemini when an API key is set; LLM output is validated against a Pydantic schema.
+4. **Validate** – Check that every transaction ID in the draft exists in the retrieved evidence, and record any unsupported IDs.
+5. **Save for review** – Store a `(:Case)` node with status `pending_review`. Only an analyst can approve or reject it, through the API or dashboard. Nothing is closed automatically.
 
 ---
 
@@ -350,6 +374,7 @@ The LangGraph agent runs these steps for each flagged transaction:
 - Add explainability (GNNExplainer) to highlight the most influential neighbours.
 - Add evaluation for narrative quality (faithfulness to retrieved evidence).
 - Containerize the full stack with Docker Compose.
+- Add authentication and role-based access for analysts.
 
 ---
 
