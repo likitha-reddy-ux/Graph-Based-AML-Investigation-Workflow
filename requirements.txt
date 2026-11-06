@@ -16,6 +16,10 @@ neo4j>=5.0
 langgraph>=0.2
 langchain-core>=0.3
 
+# LLM providers (optional - only the one you use is needed)
+anthropic>=0.40
+google-genai>=1.0
+
 # API
 fastapi>=0.110
 uvicorn>=0.29
